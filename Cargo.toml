@@ -1,0 +1,13 @@
+[package]
+name = "dactyl-truck"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+truck-modeling = "0.6"
+truck-meshalgo = "0.4"
+truck-shapeops = "0.4"
+convexhull3d = "0.5"
+
+[profile.release]
+opt-level = 3
