@@ -448,6 +448,10 @@ fn main() {
     let screw_hole = cylinder_smooth(screw_height + 5.0, screw_radius, true);
     let screw_insert =
       cylinder(screw_height, screw_radius + 1.65, 30, true).translate_z(screw_height / 2.0);
+    // The post is hollowed through its whole height so the threaded insert can
+    // be fitted from either end (the case screw hole only reaches z = 7.5).
+    let screw_post_hole =
+      cylinder(screw_height, screw_radius, 30, true).translate_z(screw_height / 2.0);
 
     let origin = Point3::new(0.0, 0.0, 0.0);
 
@@ -491,12 +495,21 @@ fn main() {
       }
     }
 
-    shapes.push(Shape::union_all(
+    let post_holes = Shape::union_all(
       positions
         .iter()
-        .map(|p| screw_insert.translate(p.x, p.y, p.z))
+        .map(|p| screw_post_hole.translate(p.x, p.y, p.z))
         .collect(),
-    ));
+    );
+    shapes.push(
+      Shape::union_all(
+        positions
+          .iter()
+          .map(|p| screw_insert.translate(p.x, p.y, p.z))
+          .collect(),
+      )
+      .subtract(&post_holes),
+    );
     screw_positions = positions.to_vec();
     screw_holes = positions
       .iter()

@@ -65,6 +65,10 @@ that tree onto Truck:
   explicit planar faces. Cubes are triangulated: `truck-shapeops` mis-handles
   quadrilateral prism faces when cutting triangular hull solids (e.g. the
   thumb-plate cut box left the thumb wall hulls uncut).
+* **Screw posts are hollow tubes.** The insert cylinder is cut with a hole
+  cylinder of the same height, so the post is open at both ends (the reference
+  screw hole only reaches z = 7.5 and leaves the top of the post capped). This
+  lets a brass threaded insert be fitted from either end.
 * **`cylinder_smooth`** (screw holes in the case) is a revolved cylinder. Its
   B-rep only stores the three circle vertices from Truck's `whole_rsweep`, so
   its 2D hull is a triangle. The bottom-plate screw holes are therefore cut
@@ -101,7 +105,8 @@ and `../src`):
 * horizontal cross-sections (z = 1 … 52 mm) have an IoU of 0.88 … 1.00;
 * every hull point set was checked against the hull inputs parsed from the
   reference `left.scad` (419 hulls, all identical up to rounding);
-* screw holes, the thumb-plate cut and all wall geometry are reproduced.
+* screw holes, the thumb-plate cut and all wall geometry are reproduced; the
+  five screw posts are hollow tubes open at z = 0 and z = 10.
 
 Known small differences:
 
