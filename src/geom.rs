@@ -76,6 +76,7 @@ impl Shape {
     self.transform(Matrix4::from_angle_z(Rad(deg.to_radians())))
   }
 
+  #[allow(dead_code)]
   pub fn mirror_x(&self) -> Self {
     let mat = Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0);
     Shape {
@@ -600,6 +601,31 @@ pub fn cylinder(height: f64, radius: f64, fn_: usize, center: bool) -> Shape {
   }
 }
 
+/// Tube along z from z = 0 to `height`, tessellated with `fn_` segments.
+///
+/// One solid whose end faces are rings (a polygon with a polygonal hole).
+pub fn tube(height: f64, outer_radius: f64, inner_radius: f64, fn_: usize) -> Shape {
+  let ring = |radius: f64, reverse: bool| {
+    let mut verts: Vec<Vertex> = (0..fn_)
+      .map(|i| {
+        let angle = 2.0 * std::f64::consts::PI * (i as f64) / (fn_ as f64);
+        Vertex::new(Point3::new(radius * angle.cos(), radius * angle.sin(), 0.0))
+      })
+      .collect();
+    if reverse {
+      verts.reverse();
+    }
+    let mut wire = Wire::new();
+    for i in 0..verts.len() {
+      wire.push_back(builder::line(&verts[i], &verts[(i + 1) % verts.len()]));
+    }
+    wire
+  };
+  let face = builder::try_attach_plane(&[ring(outer_radius, false), ring(inner_radius, true)])
+    .expect("tube face");
+  Shape::new(builder::tsweep(&face, Vector3::new(0.0, 0.0, height)))
+}
+
 /// Smooth cylinder (revolved circle), z axis, `center` like OpenSCAD's cylinder.
 ///
 /// Smooth (curved) surfaces are the most reliable input for truck booleans.
@@ -859,15 +885,108 @@ pub fn shape_mesh(shape: &Shape) -> PolygonMesh {
 
 /// Tessellates a solid into a triangulated polygon mesh and writes an STL file.
 pub fn write_stl(solid: &Solid, path: &str) -> std::io::Result<()> {
-  write_mesh_stl(&Shape::new(solid.clone()), path)
+  write_mesh_stl(&Shape::new(solid.clone()), path, false)
 }
 
-/// Tessellates a shape (union of solids) and writes an STL file.
-pub fn write_mesh_stl(shape: &Shape, path: &str) -> std::io::Result<()> {
-  let mesh = shape_mesh(shape);
+/// Vertices closer together than this are merged when writing an STL file.
+/// Must stay well below the 0.01 mm width of the post connectors.
+const WELD_TOL: f64 = 2e-3;
+
+/// Triangles of one shell, with nearly coincident vertices merged and the
+/// triangles that collapse as a result removed.
+///
+/// `truck-shapeops` leaves sliver faces along its cuts whose corners are a
+/// micron or so apart. Left alone they tessellate into zero-area triangles and
+/// into edges that do not pair up once the coordinates are rounded to `f32`,
+/// which slicers report as non-manifold edges and reversed faces.
+fn welded_triangles(shell: &Shell) -> Vec<[[f32; 3]; 3]> {
+  let mesh = shell.triangulation(MESH_TOL).to_polygon();
+  let positions = mesh.positions();
+  let cell = |v: f64| (v / WELD_TOL).floor() as i64;
+  let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+  let mut welded: Vec<Point3> = Vec::new();
+  let mut remap: Vec<usize> = Vec::with_capacity(positions.len());
+  for p in positions {
+    let (cx, cy, cz) = (cell(p.x), cell(p.y), cell(p.z));
+    let mut found = None;
+    'search: for dx in -1..=1 {
+      for dy in -1..=1 {
+        for dz in -1..=1 {
+          for &i in grid.get(&(cx + dx, cy + dy, cz + dz)).into_iter().flatten() {
+            if (welded[i] - *p).magnitude() <= WELD_TOL {
+              found = Some(i);
+              break 'search;
+            }
+          }
+        }
+      }
+    }
+    let index = found.unwrap_or_else(|| {
+      welded.push(*p);
+      grid.entry((cx, cy, cz)).or_default().push(welded.len() - 1);
+      welded.len() - 1
+    });
+    remap.push(index);
+  }
+
+  let as_f32 = |i: usize| [welded[i].x as f32, welded[i].y as f32, welded[i].z as f32];
+  let mut triangles = Vec::new();
+  for face in mesh.face_iter() {
+    let corners: Vec<usize> = face.iter().map(|v| remap[v.pos]).collect();
+    for k in 1..corners.len().saturating_sub(1) {
+      let (a, b, c) = (corners[0], corners[k], corners[k + 1]);
+      let (pa, pb, pc) = (as_f32(a), as_f32(b), as_f32(c));
+      if pa == pb || pb == pc || pa == pc {
+        continue;
+      }
+      triangles.push([pa, pb, pc]);
+    }
+  }
+  triangles
+}
+
+/// Tessellates a shape (union of solids) and writes a binary STL file.
+///
+/// Solids that overlap stay as separate closed shells; slicers treat
+/// overlapping closed volumes as their union.
+///
+/// With `mirror` the mesh is mirrored in x. Mirroring the finished triangles
+/// (rather than tessellating a mirrored shape) keeps both halves identical.
+pub fn write_mesh_stl(shape: &Shape, path: &str, mirror: bool) -> std::io::Result<()> {
+  use std::io::Write;
+  let mut triangles = Vec::new();
+  for solid in &shape.solids {
+    for shell in solid.boundaries() {
+      triangles.extend(welded_triangles(shell));
+    }
+  }
+  if mirror {
+    for [a, b, c] in triangles.iter_mut() {
+      a[0] = -a[0];
+      b[0] = -b[0];
+      c[0] = -c[0];
+      std::mem::swap(b, c);
+    }
+  }
   let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-  stl::write(&mesh, &mut file, stl::StlType::Binary)
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+  file.write_all(&[0u8; 80])?;
+  file.write_all(&(triangles.len() as u32).to_le_bytes())?;
+  for [a, b, c] in &triangles {
+    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let n = [
+      u[1] * v[2] - u[2] * v[1],
+      u[2] * v[0] - u[0] * v[2],
+      u[0] * v[1] - u[1] * v[0],
+    ];
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    let n = if len > 0.0 { [n[0] / len, n[1] / len, n[2] / len] } else { [0.0; 3] };
+    for value in n.iter().chain(a).chain(b).chain(c) {
+      file.write_all(&value.to_le_bytes())?;
+    }
+    file.write_all(&[0u8; 2])?;
+  }
+  file.flush()
 }
 
 // ---------------------------------------------------------------------------

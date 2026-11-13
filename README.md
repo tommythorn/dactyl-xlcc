@@ -65,10 +65,16 @@ that tree onto Truck:
   explicit planar faces. Cubes are triangulated: `truck-shapeops` mis-handles
   quadrilateral prism faces when cutting triangular hull solids (e.g. the
   thumb-plate cut box left the thumb wall hulls uncut).
-* **Screw posts are hollow tubes.** The insert cylinder is cut with a hole
-  cylinder of the same height, so the post is open at both ends (the reference
-  screw hole only reaches z = 7.5 and leaves the top of the post capped). This
-  lets a brass threaded insert be fitted from either end.
+* **Screw posts are hollow tubes**, open at both ends (the reference screw hole
+  only reaches z = 7.5 and leaves the top of the post capped), so a brass
+  threaded insert can be fitted from either end. They are built directly as
+  tubes (`tube` in `geom.rs`) and added after the screw holes are subtracted:
+  cutting the bore with booleans gave cracked, non-manifold shells.
+* **STL output is welded.** Each shell's vertices are merged within 2 µm and
+  collapsed triangles dropped before writing (`welded_triangles`), because
+  boolean cuts leave micron-sized sliver faces that otherwise show up in
+  slicers as non-manifold edges. The right-hand files are the mirrored
+  triangles of the left-hand ones.
 * **`cylinder_smooth`** (screw holes in the case) is a revolved cylinder. Its
   B-rep only stores the three circle vertices from Truck's `whole_rsweep`, so
   its 2D hull is a triangle. The bottom-plate screw holes are therefore cut
@@ -82,6 +88,40 @@ that tree onto Truck:
   solid), which is far more reliable than subtracting from the already-unioned
   non-convex case.
 
+## Wrist rest (differs from the OpenSCAD original)
+
+The front walls (everything facing the user, from the pinky column to the
+thumb cluster) are moved forward to the y position of the front most corner
+of the case, the front right corner of the thumb cluster. The front edge of the
+key plate is extended level in y to meet them, so the front of the case is a
+hollow box whose top follows the height of the plate's front edge.
+
+The top front and top left edges of that box are rounded (quarter circle,
+`WRIST_REST_RADIUS` = 10 mm in `main.rs`), as is the front left corner. At the
+front right corner the thumb cluster reaches the front face, so the wall keeps
+its regular (smaller) rounding there and blends into the large rounded edge
+along the End key.
+
+The bottom plate follows automatically (it is the shadow of the case). The
+front right screw insert moved forward to the new front wall and a sixth insert
+was added on the front wall, left of centre, to hold the larger plate.
+
+## Rounded exterior (differs from the OpenSCAD original)
+
+The original walls meet the key plate with a chamfer: a flat strip from the
+plate edge to the top of the wall. The outside of that strip is now a conic arc
+through the same two end points (`WallProfile` in `main.rs`): it leaves the
+plate along the plate's own slope and arrives at the wall top going straight
+down, so plate, edge and wall are tangent continuous. Where the plate rises
+towards the wall (the number row) the arc crests up to ~0.75 mm above the plate
+edge before turning down.
+
+The outside corners of the case (number row left and right, thumb cluster back
+and front right) are swept around with extra slices instead of a single flat
+bevel. The inside of the walls, the key plate and the switch holes are
+unchanged; the wall positions (and so the bottom plate) only change at those
+corners, by a fraction of a millimetre.
+
 ## Truck boolean robustness
 
 `truck-shapeops` fails (usually returning `None`, sometimes panicking with
@@ -94,8 +134,9 @@ keep the solid uncut and are reported in the summary line.
 
 ## Validation
 
-Compared against the STL files produced by the OpenSCAD flow (see `../things`
-and `../src`):
+Done before the wrist rest was added (the front of the case and the screw
+inserts now differ on purpose). Compared against the STL files produced by the
+OpenSCAD flow (see `../things` and `../src`):
 
 * bounding boxes of all four files match the OpenSCAD output exactly (0.00 mm
   on the case, <0.1 mm on the plate);

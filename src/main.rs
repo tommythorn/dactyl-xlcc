@@ -50,6 +50,179 @@ fn wall_point(
   }
 }
 
+/// Radius of the rounded top front and top left edges of the wrist rest.
+const WRIST_REST_RADIUS: f64 = 10.0;
+/// Thickness of the top and of the rounded walls of the wrist rest.
+const WRIST_REST_THICKNESS: f64 = 3.5;
+/// Number of segments in the rounded profile of the wall edges.
+const WALL_ROUND_STEPS: usize = 8;
+/// Number of extra wall slices around a rounded outside corner of the case.
+const WALL_CORNER_STEPS: usize = 5;
+/// Number of slices around the rounded front left corner.
+const WRIST_REST_CORNER_STEPS: usize = 8;
+/// Distance of the screw insert centres from the front face of the wrist rest.
+const WRIST_REST_SCREW_INSET: f64 = 5.3;
+
+/// A cross section of the wall: a chain of thin "stations" from the edge of the
+/// key plate, out over the edge, and down to the floor. Consecutive stations of
+/// neighbouring slices are hulled together to make the wall. Every slice has
+/// WALL_ROUND_STEPS + 2 stations.
+struct WallSlice {
+  stations: Vec<Shape>,
+}
+
+/// The profile of a regular wall slice hanging off a key plate corner.
+///
+/// The original case had a chamfer here: a flat strip from the top of the
+/// plate post to the top of the wall. The outside of that strip is now a
+/// rounded curve through the same two end points; the inside is unchanged.
+#[derive(Clone, Copy)]
+struct WallProfile {
+  /// Top and bottom of the post at the edge of the key plate.
+  top: Point3,
+  bottom: Point3,
+  /// Horizontal offset from `top` to the outer and the inner end of the wall top.
+  outer: (f64, f64),
+  inner: (f64, f64),
+  /// Height of the wall top.
+  z: f64,
+  /// Slope of the key plate, going out over the edge.
+  slope: f64,
+}
+
+impl WallProfile {
+  /// The outer end of the wall top.
+  fn wall_top(&self) -> Point3 {
+    Point3::new(self.top.x + self.outer.0, self.top.y + self.outer.1, self.z)
+  }
+
+  /// A profile part of the way around an outside corner, between two profiles
+  /// that hang off the same post. The wall top follows an elliptic arc that is
+  /// tangent to the walls on both sides.
+  fn corner(a: &WallProfile, b: &WallProfile, s: f64) -> WallProfile {
+    let angle = s * std::f64::consts::FRAC_PI_2;
+    let (ca, cb) = (angle.cos(), angle.sin());
+    let lerp = |x: f64, y: f64| x + s * (y - x);
+    WallProfile {
+      top: a.top,
+      bottom: a.bottom,
+      outer: (ca * a.outer.0 + cb * b.outer.0, ca * a.outer.1 + cb * b.outer.1),
+      inner: (ca * a.inner.0 + cb * b.inner.0, ca * a.inner.1 + cb * b.inner.1),
+      z: lerp(a.z, b.z),
+      slope: lerp(a.slope, b.slope),
+    }
+  }
+
+  fn slice(&self, post: &Shape) -> WallSlice {
+    let n = WALL_ROUND_STEPS;
+    let reach = (self.outer.0 * self.outer.0 + self.outer.1 * self.outer.1).sqrt();
+    let drop = self.top.z - self.z;
+    // The outside is a conic arc (rational quadratic Bezier) in the vertical
+    // plane through the post and the wall top: it leaves the plate along the
+    // plate's own slope and arrives at the wall top going straight down. The
+    // control point is where those two tangents meet.
+    let control_z = (reach * self.slope).clamp(-0.5 * drop, reach);
+    // Weight that makes the arc circular when the two tangents are equally
+    // long, and elliptic otherwise.
+    let (ax, az) = (-reach, -control_z);
+    let (bx, bz) = (0.0, -drop - control_z);
+    let cos_angle = (ax * bx + az * bz)
+      / ((ax * ax + az * az).sqrt() * (bx * bx + bz * bz).sqrt()).max(1e-9);
+    let weight = ((1.0 - cos_angle.clamp(-1.0, 1.0)) / 2.0).sqrt();
+
+    let mut stations = vec![post.clone()];
+    for k in 1..n {
+      let t = k as f64 / n as f64;
+      let (b0, b1, b2) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t) * weight, t * t);
+      let sum = b0 + b1 + b2;
+      let r = (b1 * reach + b2 * reach) / sum / reach.max(1e-9);
+      let z = (b1 * control_z - b2 * drop) / sum;
+      let outer = Point3::new(
+        self.top.x + r * self.outer.0,
+        self.top.y + r * self.outer.1,
+        self.top.z + z,
+      );
+      // The inside stays on the flat underside of the old chamfer.
+      let inner = Point3::new(
+        self.bottom.x + t * (self.top.x + self.inner.0 - self.bottom.x),
+        self.bottom.y + t * (self.top.y + self.inner.1 - self.bottom.y),
+        self.bottom.z + t * (self.z - self.bottom.z),
+      );
+      stations.push(wall_station(outer, inner));
+    }
+    let wall_top = self.wall_top();
+    let bar = Shape::hull(&[
+      cube(0.1, 0.1, 0.1, true).translate(wall_top.x, wall_top.y, wall_top.z),
+      cube(0.1, 0.1, 0.1, true).translate(
+        self.top.x + self.inner.0,
+        self.top.y + self.inner.1,
+        self.z,
+      ),
+    ]);
+    let floor = bar.project_extrude(0.1, true).translate_z(0.05);
+    stations.push(bar);
+    stations.push(floor);
+    WallSlice { stations }
+  }
+}
+
+/// A thin station spanning the wall thickness from `outer` to `inner`.
+fn wall_station(outer: Point3, inner: Point3) -> Shape {
+  let dot = cube(0.01, 0.01, 0.01, true);
+  dot
+    .translate(outer.x, outer.y, outer.z)
+    .union(&dot.translate(inner.x, inner.y, inner.z))
+}
+
+/// A wall slice with a rounded top edge. `edge` is the point on the top surface
+/// where the rounding starts, `out` the horizontal unit direction out of the
+/// case. The profile is a quarter circle that ends in a vertical wall.
+fn round_slice(edge: Point3, out: (f64, f64)) -> WallSlice {
+  let radius = WRIST_REST_RADIUS.min(edge.z - 1.0);
+  let inner_radius = (radius - WRIST_REST_THICKNESS).max(0.0);
+  let at = |r: f64, phi: f64| {
+    Point3::new(
+      edge.x + r * phi.sin() * out.0,
+      edge.y + r * phi.sin() * out.1,
+      edge.z - radius + r * phi.cos(),
+    )
+  };
+  let mut stations = Vec::new();
+  for k in 0..=WALL_ROUND_STEPS {
+    let phi = (k as f64 / WALL_ROUND_STEPS as f64 * 90.0).to_radians();
+    // The first station is vertical so the flat top keeps its full thickness.
+    let inner = if k == 0 {
+      Point3::new(edge.x, edge.y, edge.z - WRIST_REST_THICKNESS)
+    } else {
+      at(inner_radius, phi)
+    };
+    stations.push(wall_station(at(radius, phi), inner));
+  }
+  let quarter = std::f64::consts::FRAC_PI_2;
+  let (outer, inner) = (at(radius, quarter), at(inner_radius, quarter));
+  let foot = cube(0.01, 0.01, 0.1, true).translate_z(0.05);
+  stations.push(
+    foot
+      .translate(outer.x, outer.y, 0.0)
+      .union(&foot.translate(inner.x, inner.y, 0.0)),
+  );
+  WallSlice { stations }
+}
+
+/// The wall between two neighbouring slices.
+fn connect_slices(a: &WallSlice, b: &WallSlice) -> Vec<Shape> {
+  (0..a.stations.len() - 1)
+    .map(|k| {
+      Shape::hull(&[
+        a.stations[k].clone(),
+        a.stations[k + 1].clone(),
+        b.stations[k].clone(),
+        b.stations[k + 1].clone(),
+      ])
+    })
+    .collect()
+}
+
 fn main() {
   install_panic_hook();
   let args: Vec<String> = std::env::args().collect();
@@ -315,11 +488,17 @@ fn main() {
   //
   // Make the wall
   //
+  // The front walls are replaced by the wrist rest (see below); its front face
+  // and left face positions are needed later for the screw inserts.
+  let wrist_front_y: f64;
+  let wrist_screw_x: f64;
   {
     let mut ctrl_tl_rotated = d.key(KeyId::Ctrl).get_top_left(0.0);
     ctrl_tl_rotated.rotate_front(0.0, 0.0, -15.0);
 
-    let wall_points: Vec<WallPoint> = vec![
+    // The wall up to (and including) the front right corner of the thumb
+    // cluster, which is the front most point of the case.
+    let wall_points_before: Vec<WallPoint> = vec![
       // Start top left and go clockwise
       wall_point(d.key(KeyId::Plus).get_top_left(0.0), Direction::Up, 0.0, 0.0),
       wall_point(key_plus_top_right_wall.clone(), Direction::Up, 0.0, 0.3),
@@ -345,12 +524,20 @@ fn main() {
       wall_point(d.key(KeyId::End).get_top_right(0.0), Direction::Right, 0.0, 0.0),
       wall_point(d.key(KeyId::End).get_bottom_right(0.0), Direction::Right, 0.0, 0.5),
       wall_point(d.key(KeyId::End).get_bottom_right(0.0), Direction::Down, 0.0, 0.5),
-      wall_point(d.key(KeyId::End).get_bottom_left(0.0), Direction::Down, 0.0, 0.0),
-      wall_point(d.key(KeyId::Backspace).get_bottom_left(0.0), Direction::Down, 0.0, 0.0),
-      wall_point(slash_bottom_right.clone(), Direction::Down, 0.0, 0.0),
-      wall_point(d.key(KeyId::Tilde).get_bottom_right(0.0), Direction::Down, 0.0, 0.0),
-      wall_point(d.key(KeyId::Tilde).get_bottom_left(0.0), Direction::Down, 0.0, 0.0),
-      wall_point(d.key(KeyId::Shift).get_bottom_left(0.0), Direction::Down, 0.0, 0.75),
+    ];
+    // The front edge of the key plate, right to left. The walls that used to
+    // hang off these points are moved forward to the front of the wrist rest.
+    let front_edge: Vec<TransformList> = vec![
+      d.key(KeyId::End).get_bottom_right(0.0),
+      d.key(KeyId::End).get_bottom_left(0.0),
+      d.key(KeyId::Backspace).get_bottom_left(0.0),
+      slash_bottom_right.clone(),
+      d.key(KeyId::Tilde).get_bottom_right(0.0),
+      d.key(KeyId::Tilde).get_bottom_left(0.0),
+      d.key(KeyId::Shift).get_bottom_left(0.0),
+    ];
+    // The rest of the wall, from the front left corner of the pinky column.
+    let wall_points_after: Vec<WallPoint> = vec![
       wall_point(d.key(KeyId::Shift).get_bottom_left(0.0), Direction::Left, 0.0, 0.5),
       wall_point(d.key(KeyId::Shift).get_top_left(0.0), Direction::Left, 0.0, 0.5),
       wall_point(d.key(KeyId::Caps).get_bottom_left(0.0), Direction::Left, 0.0, 0.0),
@@ -361,10 +548,7 @@ fn main() {
       wall_point(d.key(KeyId::Plus).get_top_left(0.0), Direction::Left, 0.0, 0.0),
     ];
 
-    let mut wall_slices: Vec<Vec<Shape>> = Vec::new();
-    for point in wall_points {
-      let s1 = point.transforms.apply_shape(&connector);
-
+    let wall_profile = |point: &WallPoint| -> WallProfile {
       let mut t = point.transforms.clone();
       let distance = 4.8 + point.extra_distance;
       match point.out_direction {
@@ -408,27 +592,159 @@ fn main() {
       };
 
       let width = 3.3 + point.extra_width;
-      let s2 = Shape::hull(&[
-        cube(0.1, 0.1, 0.1, true).translate(p2.x, p2.y, p2.z),
-        cube(0.1, 0.1, 0.1, true).translate(p2.x + width * in_x, p2.y + width * in_y, p2.z),
-      ]);
+      let top = point.transforms.apply_point(Point3::new(0.0, 0.0, 0.0));
+      let outer = (p2.x - top.x, p2.y - top.y);
 
-      let mut slice = Vec::new();
-      slice.push(Shape::hull(&[s1.clone(), s2.clone()]));
-      slice.push(Shape::hull(&[
-        s2.clone(),
-        s2.project_extrude(0.1, true).translate_z(0.05),
+      // Slope of the key plate in the direction of the wall.
+      let local_out = match point.out_direction {
+        Direction::Up => Point3::new(0.0, 1.0, 0.0),
+        Direction::Down => Point3::new(0.0, -1.0, 0.0),
+        Direction::Left => Point3::new(-1.0, 0.0, 0.0),
+        Direction::Right => Point3::new(1.0, 0.0, 0.0),
+      };
+      let u = point.transforms.apply_point(local_out);
+      let reach = (outer.0 * outer.0 + outer.1 * outer.1).sqrt().max(1e-9);
+      let run = ((u.x - top.x) * outer.0 + (u.y - top.y) * outer.1) / reach;
+      let slope = if run > 1e-6 { (u.z - top.z) / run } else { 0.0 };
+
+      WallProfile {
+        top,
+        bottom: point.transforms.apply_point(Point3::new(0.0, 0.0, -3.5)),
+        outer,
+        inner: (outer.0 + width * in_x, outer.1 + width * in_y),
+        z: p2.z,
+        slope,
+      }
+    };
+
+    // Slices for a run of wall points. Where two consecutive points hang off
+    // the same plate corner (an outside corner of the case), extra slices sweep
+    // the wall around the corner.
+    let wall_run = |points: &[WallPoint]| -> Vec<WallSlice> {
+      let profiles: Vec<WallProfile> = points.iter().map(&wall_profile).collect();
+      let mut slices = Vec::new();
+      for i in 0..points.len() {
+        let post = points[i].transforms.apply_shape(&connector);
+        if geom::verbose() {
+          let p = &profiles[i];
+          println!(
+            "WALL {:?} top {:.2} {:.2} {:.2} reach {:.2} drop {:.2} slope {:.2}",
+            points[i].out_direction, p.top.x, p.top.y, p.top.z,
+            (p.outer.0 * p.outer.0 + p.outer.1 * p.outer.1).sqrt(), p.top.z - p.z, p.slope
+          );
+        }
+        slices.push(profiles[i].slice(&post));
+        let j = i + 1;
+        if j == points.len() || points[i].out_direction == points[j].out_direction {
+          continue;
+        }
+        let (a, b) = (&profiles[i], &profiles[j]);
+        let gap = (a.top.x - b.top.x).abs() + (a.top.y - b.top.y).abs() + (a.top.z - b.top.z).abs();
+        if gap > 1e-6 {
+          continue;
+        }
+        for k in 1..=WALL_CORNER_STEPS {
+          let s = k as f64 / (WALL_CORNER_STEPS + 1) as f64;
+          slices.push(WallProfile::corner(a, b, s).slice(&post));
+        }
+      }
+      slices
+    };
+
+    let front_y = wall_profile(wall_points_before.last().unwrap()).wall_top().y;
+    let left_x = wall_profile(&wall_points_after[0]).wall_top().x;
+
+    let mut wall_slices = wall_run(&wall_points_before);
+
+    //
+    // Wrist rest
+    //
+    // The front walls are moved forward to the y position of the front most
+    // corner of the case (the front right corner of the thumb cluster), and the
+    // key plate edge is extended straight forward (level in y) to meet them.
+    // The front of the case becomes a hollow box whose top follows the height
+    // of the front edge of the key plate. The top front and top left edges of
+    // that box are rounded with WRIST_REST_RADIUS.
+    {
+      let origin = Point3::new(0.0, 0.0, 0.0);
+      // Where the flat top ends and the rounded edges start.
+      let edge_y = front_y + WRIST_REST_RADIUS;
+      let edge_x = left_x + WRIST_REST_RADIUS;
+
+      let posts: Vec<Shape> = front_edge.iter().map(|t| t.apply_shape(&connector)).collect();
+      let tops: Vec<Point3> = front_edge.iter().map(|t| t.apply_point(origin)).collect();
+      let last = tops.len() - 1;
+
+      // Straight ahead of every plate edge point between the two end points:
+      // a slice of the rounded front wall.
+      let front: Vec<WallSlice> = (1..last)
+        .map(|i| round_slice(Point3::new(tops[i].x, edge_y, tops[i].z), (0.0, -1.0)))
+        .collect();
+
+      // The front right corner keeps its regular (smaller) rounded wall, as the
+      // thumb cluster reaches all the way to the front there; the wall blends
+      // from that into the large rounded edge along the End key.
+      shapes.push(Shape::hull(&[
+        posts[0].clone(),
+        posts[1].clone(),
+        front[0].stations[0].clone(),
+      ]));
+      for i in 1..last - 1 {
+        shapes.push(Shape::hull(&[
+          posts[i].clone(),
+          posts[i + 1].clone(),
+          front[i - 1].stations[0].clone(),
+          front[i].stations[0].clone(),
+        ]));
+      }
+
+      // The left edge. The plate edge runs diagonally from the last bowl key
+      // to the front left corner of the pinky column; the rounded left edge
+      // starts where that diagonal crosses edge_x.
+      let (a, b) = (tops[last - 1], tops[last]);
+      let s = ((edge_x - a.x) / (b.x - a.x)).clamp(0.0, 1.0);
+      let left_back = Point3::new(a.x + s * (b.x - a.x), a.y + s * (b.y - a.y), a.z + s * (b.z - a.z));
+      let corner = Point3::new(left_back.x, edge_y, left_back.z);
+
+      // Rounded front left corner: sweep the rounded profile from facing front
+      // to facing left.
+      let corner_slices: Vec<WallSlice> = (0..=WRIST_REST_CORNER_STEPS)
+        .map(|j| {
+          let angle = (j as f64 / WRIST_REST_CORNER_STEPS as f64 * 90.0).to_radians();
+          round_slice(corner, (-angle.sin(), -angle.cos()))
+        })
+        .collect();
+      let left_slice = round_slice(left_back, (-1.0, 0.0));
+
+      shapes.push(Shape::hull(&[
+        posts[last - 1].clone(),
+        front[last - 2].stations[0].clone(),
+        corner_slices[0].stations[0].clone(),
+        left_slice.stations[0].clone(),
       ]));
 
-      wall_slices.push(slice);
+      wall_slices.extend(front);
+      wall_slices.extend(corner_slices);
+      wall_slices.push(left_slice);
+
+      wrist_front_y = front_y;
+      wrist_screw_x = tops[last - 1].x;
     }
 
+    // The wall is a closed loop: the last of these points is on the same plate
+    // corner as the very first wall point, so close the run to round that
+    // corner too.
+    let mut closing = wall_points_after;
+    closing.push(wall_points_before.into_iter().next().unwrap());
+    let mut after_slices = wall_run(&closing);
+    after_slices.pop();
+    wall_slices.extend(after_slices);
+
     for i in 0..wall_slices.len() {
-      let slice = &wall_slices[i];
-      let next_slice = &wall_slices[(i + 1) % wall_slices.len()];
-      for j in 0..slice.len() {
-        shapes.push(Shape::hull(&[slice[j].clone(), next_slice[j].clone()]));
-      }
+      shapes.extend(connect_slices(
+        &wall_slices[i],
+        &wall_slices[(i + 1) % wall_slices.len()],
+      ));
     }
   }
 
@@ -444,14 +760,15 @@ fn main() {
   let screw_radius = 4.4 / 2.0;
   let screw_holes: Vec<Shape>;
   let screw_positions: Vec<Point3>;
+  let screw_posts: Shape;
   {
     let screw_hole = cylinder_smooth(screw_height + 5.0, screw_radius, true);
-    let screw_insert =
-      cylinder(screw_height, screw_radius + 1.65, 30, true).translate_z(screw_height / 2.0);
-    // The post is hollowed through its whole height so the threaded insert can
-    // be fitted from either end (the case screw hole only reaches z = 7.5).
-    let screw_post_hole =
-      cylinder(screw_height, screw_radius, 30, true).translate_z(screw_height / 2.0);
+    // The post is a tube, open through its whole height, so the threaded
+    // insert can be fitted from either end (the case screw hole only reaches
+    // z = 7.5). It is built directly as a tube: cutting the bore out with
+    // booleans (and then the coincident screw hole on top of that) left
+    // truck-shapeops with cracked, non-manifold shells.
+    let screw_insert = tube(screw_height, screw_radius + 1.65, screw_radius, 30);
 
     let origin = Point3::new(0.0, 0.0, 0.0);
 
@@ -471,8 +788,14 @@ fn main() {
 
     let mut screw_right_bottom = d.key(KeyId::End).get_bottom_left(0.0).apply_point(origin);
     screw_right_bottom.z = 0.0;
-    screw_right_bottom.y += 3.5;
+    // Against the front wall of the wrist rest.
+    screw_right_bottom.y = wrist_front_y + WRIST_REST_SCREW_INSET;
     screw_right_bottom.x += 1.5;
+
+    // The wrist rest makes the bottom plate a lot bigger; hold down its front
+    // left part as well. (Not in the corner itself: the rounded edges leave no
+    // room for a full height post there.)
+    let screw_front_left = Point3::new(wrist_screw_x, wrist_front_y + WRIST_REST_SCREW_INSET, 0.0);
 
     let mut screw_right_mid = d.key(KeyId::Ctrl).get_top_left(0.0).apply_point(origin);
     screw_right_mid.z = 0.0;
@@ -483,6 +806,7 @@ fn main() {
       screw_right_top,
       screw_right_mid,
       screw_right_bottom,
+      screw_front_left,
       screw_left_bottom,
     ];
     if geom::verbose() {
@@ -495,20 +819,13 @@ fn main() {
       }
     }
 
-    let post_holes = Shape::union_all(
+    // Kept out of `shapes`: the posts must not go through the subtraction of
+    // the screw holes below.
+    screw_posts = Shape::union_all(
       positions
         .iter()
-        .map(|p| screw_post_hole.translate(p.x, p.y, p.z))
+        .map(|p| screw_insert.translate(p.x, p.y, p.z))
         .collect(),
-    );
-    shapes.push(
-      Shape::union_all(
-        positions
-          .iter()
-          .map(|p| screw_insert.translate(p.x, p.y, p.z))
-          .collect(),
-      )
-      .subtract(&post_holes),
     );
     screw_positions = positions.to_vec();
     screw_holes = positions
@@ -552,7 +869,9 @@ fn main() {
     }
   }
   println!("subtracting {} shapes...", negative_shapes.len());
-  let result = case_shapes.subtract(&Shape::union_all(negative_shapes.clone()));
+  let result = case_shapes
+    .subtract(&Shape::union_all(negative_shapes.clone()))
+    .union(&screw_posts);
   println!(
     "subtractions: {} plain, {} translated, {} rotated (max angle {:.2} deg)",
     geom::SUB_PLAIN.load(std::sync::atomic::Ordering::Relaxed),
@@ -649,9 +968,9 @@ fn main() {
     eprintln!("dumped {} triangles", tri_total);
   }
   println!("writing left.stl");
-  write_mesh_stl(&result, &out_path(&out_dir, "left.stl")).unwrap();
+  write_mesh_stl(&result, &out_path(&out_dir, "left.stl"), false).unwrap();
   println!("writing right.stl");
-  write_mesh_stl(&result.mirror_x(), &out_path(&out_dir, "right.stl")).unwrap();
+  write_mesh_stl(&result, &out_path(&out_dir, "right.stl"), true).unwrap();
 
   // Bottom plate
   {
@@ -718,9 +1037,9 @@ fn main() {
     let plate = plate.subtract(&Shape { solids: holes });
 
     println!("writing bottom_left.stl");
-    write_mesh_stl(&plate, &out_path(&out_dir, "bottom_left.stl")).unwrap();
+    write_mesh_stl(&plate, &out_path(&out_dir, "bottom_left.stl"), false).unwrap();
     println!("writing bottom_right.stl");
-    write_mesh_stl(&plate.mirror_x(), &out_path(&out_dir, "bottom_right.stl")).unwrap();
+    write_mesh_stl(&plate, &out_path(&out_dir, "bottom_right.stl"), true).unwrap();
   }
 }
 
