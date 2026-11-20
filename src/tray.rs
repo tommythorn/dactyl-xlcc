@@ -71,11 +71,11 @@ const PLUG_DEPTH: f64 = 4.0;
 /// The flanges: how far they reach past the notch on both sides, and the
 /// channel they run in (depth range behind the outer face).
 const FLANGE_REACH: f64 = 2.5;
-const FLANGE_FRONT: f64 = PLUG_DEPTH + 0.1;
-const FLANGE_BACK: f64 = 5.95;
+const FLANGE_FRONT: f64 = PLUG_DEPTH + 0.05;
+const FLANGE_BACK: f64 = 6.02;
 const CHANNEL_BACK: f64 = 6.1;
 /// Clearance between the faceplate and the sides and top of the notch.
-const NOTCH_CLEARANCE: f64 = 0.1;
+const NOTCH_CLEARANCE: f64 = 0.04;
 /// Width of the dock on the left side of the notch (the width on the right
 /// side, next to the corner of the case, is up to the caller), and its total
 /// depth.
@@ -220,7 +220,7 @@ impl Dock {
     let notch_top = face_height() + NOTCH_CLEARANCE;
     let top = notch_top + DOCK_LINTEL;
     let (l, r) = (self.left.0, self.right.0);
-    let web = FLANGE_REACH + 0.2;
+    let web = FLANGE_REACH + 0.1;
     let side = self.side_right;
     Shape::union_all(vec![
       // In the wall, next to the notch: the flanges pull against these.

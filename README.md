@@ -97,24 +97,32 @@ that tree onto Truck:
 
 The front walls (everything facing the user, from the pinky column to the
 thumb cluster) and the right wall of the thumb cluster are replaced by a
-hollow box with a flat top. In plan view the box is a rectangle:
+hollow box with a tilted, gently curved top. In plan view the box is a
+rectangle:
 
 * from the left wall to the right most (back right) corner of the thumb
   cluster;
-* forward to `WRIST_REST_EXTRA_DEPTH` (25.3 mm, which keeps the case within a 180 x 180 mm print bed) in front of the front most (front
-  right) corner of the thumb cluster.
+* forward to `WRIST_REST_EXTRA_DEPTH` (30.3 mm) in front of the front most
+  (front right) corner of the thumb cluster. The case is about 180 x 185 mm.
 
-The top is level, at the height of the highest point of the front edge of the
-key plate (next to the thumb cluster, ~31.6 mm). The top edges and the two
-front corners are rounded (quarter circle, `WRIST_REST_RADIUS` = 8 mm).
+The height of the top is given at its corners, relative to the highest point
+of the front edge of the key plate (next to the thumb cluster, ~31.6 mm):
+`WRIST_REST_RISE_BACK_LEFT` (+5 mm, in front of the pinky column),
+`WRIST_REST_RISE_FRONT_LEFT` (-10 mm) and `WRIST_REST_RISE_FRONT_RIGHT`
+(+10 mm, above the thumb keys' plate). The back right corner follows the thumb
+cluster. In between, the four heights are blended bilinearly, which makes the
+top a slightly twisted surface rather than a plane. Towards the rims it levels
+off (over `WRIST_REST_LEVEL_OFF`, 15 mm), so it runs into the rounded top
+edges without a crease. The top edges and the two front corners are rounded
+(quarter circle, `WRIST_REST_RADIUS` = 8 mm).
 
-Between the flat top and the edge of the key plate the surface follows a smooth
-S curve (level at both ends): down to the bowl, which is up to 15 mm lower at
-the pinky column, and up to the thumb cluster, whose right edge is up to 10 mm
-higher. The curve is `WRIST_REST_SLOPE_RUN` (2 mm) long per mm of height
-difference. Next to the back of the thumb cluster there is no room for the
-whole curve, so the rim of the box rises there to meet the regular wall at the
-back right corner of the thumb cluster.
+Between that top and the edge of the key plate the surface follows a smooth
+S curve (level at both ends): down to the bowl, which is up to 20 mm lower at
+the pinky column, and up from or down to the thumb cluster. The curve is
+`WRIST_REST_SLOPE_RUN` (2 mm) long per mm of height difference. Next to the
+back of the thumb cluster there is no room for the whole curve, so the rim of
+the box follows the thumb cluster there to meet the regular wall at its back
+right corner.
 
 The bottom plate follows automatically (it is the shadow of the case). There
 are seven screw inserts: the four of the original that are not at the front,
@@ -172,13 +180,27 @@ of a millimetre.
 
 All curved surfaces are faceted; the number of segments is set by
 `WALL_ROUND_STEPS`, `WALL_CORNER_STEPS`, `WRIST_REST_CORNER_STEPS` and
-`WRIST_REST_SLOPE_STEPS` in `main.rs`.
+`WRIST_REST_SLOPE_STEPS` / `WRIST_REST_TOP_STEPS` in `main.rs`.
 
 ## Switch holes (differ from the OpenSCAD original)
 
 The two rounded tabs that hold a switch in its hole have a radius of
 `K_SIDE_NUB_RADIUS` = 1.15 mm (`key.rs`) instead of 1.0 mm, so each reaches
 0.15 mm further into the hole.
+
+## STL clean-up
+
+Every shell in the STL files is closed, but the hulls and cuts leave two kinds
+of degenerate triangles that slicers object to ("non-manifold edges", "reversed
+faces"), and not on every run. `write_mesh_stl` removes both, per shell:
+
+* fins: two triangles on the same three corners, back to back;
+* needles: triangles whose corners are on one line. The neighbour across the
+  long edge is split at the corner in the middle instead.
+
+To check a file the way the slicer does:
+`/Applications/BambuStudio.app/Contents/MacOS/BambuStudio --info out/left.stl`
+should print `manifold = yes`.
 
 ## Truck boolean robustness
 

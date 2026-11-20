@@ -58,7 +58,17 @@ const WRIST_REST_RADIUS: f64 = 8.0;
 const WRIST_REST_THICKNESS: f64 = 3.5;
 /// How far the front of the wrist rest is in front of the front most corner of
 /// the thumb cluster.
-const WRIST_REST_EXTRA_DEPTH: f64 = 25.3;
+const WRIST_REST_EXTRA_DEPTH: f64 = 30.3;
+/// The top of the wrist rest is tilted and gently curved. These are the
+/// heights of three of its corners, relative to the highest point of the front
+/// edge of the key plate: back left (in front of the pinky column), front left
+/// and front right. The back right corner follows the thumb cluster.
+const WRIST_REST_RISE_BACK_LEFT: f64 = 5.0;
+const WRIST_REST_RISE_FRONT_LEFT: f64 = -10.0;
+const WRIST_REST_RISE_FRONT_RIGHT: f64 = 10.0;
+/// The top levels off over this distance towards the rounded edges, so it
+/// runs into them without a crease.
+const WRIST_REST_LEVEL_OFF: f64 = 15.0;
 /// The top of the wrist rest curves down (or up) to the edge of the key plate.
 /// Horizontal length of that curve: this much per mm of height difference, and
 /// its minimum.
@@ -66,6 +76,8 @@ const WRIST_REST_SLOPE_RUN: f64 = 2.0;
 const WRIST_REST_SLOPE_MIN_RUN: f64 = 8.0;
 /// Number of segments along that curve.
 const WRIST_REST_SLOPE_STEPS: usize = 20;
+/// Number of segments from the end of that curve to the rim of the wrist rest.
+const WRIST_REST_TOP_STEPS: usize = 14;
 /// Distance between the cross sections of that curve, along the plate edge.
 const WRIST_REST_RAY_SPACING: f64 = 3.0;
 /// Number of segments in the rounded profile of the wall edges.
@@ -801,8 +813,39 @@ fn main() {
       let s = ((edge_xl - edge[last - 1].0.x) / (edge[last].0.x - edge[last - 1].0.x)).clamp(0.0, 1.0);
       let left_back = lerp2(edge[last - 1], edge[last], s);
 
+      // The top of the box, away from the key plate: the three given corner
+      // heights and the height of the thumb cluster at the back right, blended
+      // bilinearly. `ease` is the blend along one axis: a straight line that
+      // levels off towards the rims (over `a0` at 0 and `a1` at 1).
+      let ease = |t: f64, a0: f64, a1: f64| -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        let k = 1.0 / (1.0 - a0 / 2.0 - a1 / 2.0);
+        if t < a0 {
+          k * t * t / (2.0 * a0)
+        } else if t > 1.0 - a1 {
+          1.0 - k * (1.0 - t) * (1.0 - t) / (2.0 * a1)
+        } else {
+          k * (t - a0 / 2.0)
+        }
+      };
+      let (width, depth) = (edge_xr - edge_xl, left_back.0.y - edge_y);
+      let across = |x: f64| ease((x - edge_xl) / width, WRIST_REST_LEVEL_OFF / width, WRIST_REST_LEVEL_OFF / width);
+      let along = |y: f64| ease((y - edge_y) / depth, WRIST_REST_LEVEL_OFF / depth, 0.0);
+      let back_left = height + WRIST_REST_RISE_BACK_LEFT;
+      let front_left = height + WRIST_REST_RISE_FRONT_LEFT;
+      let front_right = height + WRIST_REST_RISE_FRONT_RIGHT;
+      // The right rim meets the edge of the thumb cluster at `right_back`.
+      let back_right = front_right + (right_back.0.z - front_right) / along(right_back.0.y);
+      let target = |x: f64, y: f64| -> f64 {
+        let (u, v) = (across(x), along(y));
+        let front = front_left + u * (front_right - front_left);
+        let back = back_left + u * (back_right - back_left);
+        front + v * (back - front)
+      };
+
       struct Ray {
-        /// Points on the top surface, from the plate edge along the curve.
+        /// Points on the top surface, from the plate edge along the curve and
+        /// on to the rim.
         points: Vec<Point3>,
         /// The underside of the plate edge, below the first point.
         bottom: Point3,
@@ -818,16 +861,29 @@ fn main() {
           reach = reach.min((q.0.y - edge_y) / -dir.1);
         }
         let reach = reach.max(0.0);
-        let run = (WRIST_REST_SLOPE_RUN * (height - q.0.z).abs()).max(WRIST_REST_SLOPE_MIN_RUN);
+        // The length of the curve depends on the height it has to make up,
+        // which depends on where it ends.
+        let run_to = |t: f64| {
+          let h = target(q.0.x + dir.0 * t, q.0.y + dir.1 * t);
+          (WRIST_REST_SLOPE_RUN * (h - q.0.z).abs()).max(WRIST_REST_SLOPE_MIN_RUN)
+        };
+        let mut run = run_to(0.0);
+        for _ in 0..4 {
+          run = run_to(run.min(reach));
+        }
         let at = |t: f64| {
           let s = (1.0 - (std::f64::consts::PI * (t / run).min(1.0)).cos()) / 2.0;
-          Point3::new(q.0.x + dir.0 * t, q.0.y + dir.1 * t, q.0.z + s * (height - q.0.z))
+          let (x, y) = (q.0.x + dir.0 * t, q.0.y + dir.1 * t);
+          Point3::new(x, y, q.0.z + s * (target(x, y) - q.0.z))
         };
         // Where there is not enough room for the whole curve, the rim is
-        // higher (or lower) than the flat top.
+        // higher (or lower) than the top of the box.
         let end = run.min(reach);
+        let mut points: Vec<Point3> = (0..=steps).map(|k| at(end * k as f64 / steps as f64)).collect();
+        let n = WRIST_REST_TOP_STEPS;
+        points.extend((1..=n).map(|k| at(end + (reach - end) * k as f64 / n as f64)));
         Ray {
-          points: (0..=steps).map(|k| at(end * k as f64 / steps as f64)).collect(),
+          points,
           bottom: q.1,
           rim: at(reach),
         }
@@ -891,10 +947,9 @@ fn main() {
       for pair in rays.windows(2) {
         let (a, b) = (&pair[0], &pair[1]);
         let station = |r: &Ray, k: usize| (r.points[k], if k == 0 { r.bottom } else { drop(r.points[k]) });
-        for k in 0..steps {
+        for k in 0..a.points.len() - 1 {
           cell(&[station(a, k), station(a, k + 1), station(b, k), station(b, k + 1)]);
         }
-        cell(&[station(a, steps), station(b, steps), (a.rim, drop(a.rim)), (b.rim, drop(b.rim))]);
       }
 
       // The rounded edge and the wall of the box, along the rim: down the
@@ -929,8 +984,8 @@ fn main() {
 
       if geom::verbose() {
         println!(
-          "wrist rest: x {:.2}..{:.2}, front y {:.2}, height {:.2}, {} rays",
-          left_x, right_x, front_y, height, rays.len()
+          "wrist rest: x {:.2}..{:.2}, front y {:.2}, {} rays, top: back left {:.2}, front left {:.2}, front right {:.2}, back right {:.2}",
+          left_x, right_x, front_y, rays.len(), back_left, front_left, front_right, back_right
         );
       }
       rest_slices = slices;

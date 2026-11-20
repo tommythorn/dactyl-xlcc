@@ -1006,7 +1006,7 @@ fn welded_triangles(shell: &Shell) -> Vec<[[f32; 3]; 3]> {
   }
 
   let as_f32 = |i: usize| [welded[i].x as f32, welded[i].y as f32, welded[i].z as f32];
-  let mut triangles = Vec::new();
+  let mut triangles: Vec<[usize; 3]> = Vec::new();
   for face in mesh.face_iter() {
     let corners: Vec<usize> = face.iter().map(|v| remap[v.pos]).collect();
     for k in 1..corners.len().saturating_sub(1) {
@@ -1015,10 +1015,122 @@ fn welded_triangles(shell: &Shell) -> Vec<[[f32; 3]; 3]> {
       if pa == pb || pb == pc || pa == pc {
         continue;
       }
-      triangles.push([pa, pb, pc]);
+      triangles.push([a, b, c]);
     }
   }
-  triangles
+  remove_fins(&mut triangles);
+  remove_needles(&mut triangles, &welded);
+  remove_fins(&mut triangles);
+  triangles.iter().map(|t| [as_f32(t[0]), as_f32(t[1]), as_f32(t[2])]).collect()
+}
+
+/// Removes "fins": pairs of triangles on the same three corners, back to back.
+/// They enclose nothing, and slicers count their edges as non-manifold.
+fn remove_fins(triangles: &mut Vec<[usize; 3]>) {
+  let key = |t: &[usize; 3]| {
+    let mut k = *t;
+    k.sort();
+    k
+  };
+  // Even permutations of the sorted corners have the same winding.
+  let winding = |t: &[usize; 3]| {
+    let k = key(t);
+    let i = k.iter().position(|&v| v == t[0]).unwrap();
+    t[1] == k[(i + 1) % 3]
+  };
+  let mut seen: HashMap<[usize; 3], Vec<usize>> = HashMap::new();
+  for (i, t) in triangles.iter().enumerate() {
+    seen.entry(key(t)).or_default().push(i);
+  }
+  let mut removed = vec![false; triangles.len()];
+  for group in seen.values() {
+    let (mut front, mut back): (Vec<usize>, Vec<usize>) = group.iter().partition(|&&i| winding(&triangles[i]));
+    while let (Some(a), Some(b)) = (front.pop(), back.pop()) {
+      removed[a] = true;
+      removed[b] = true;
+    }
+  }
+  let mut k = 0;
+  triangles.retain(|_| {
+    k += 1;
+    !removed[k - 1]
+  });
+}
+
+/// A triangle whose corners are (all but) on one line is a "needle" when its
+/// height over its longest edge is less than this.
+const NEEDLE_HEIGHT: f64 = 1e-4;
+
+/// Removes the triangles without area from a closed triangle mesh.
+///
+/// Hulls of nearly coplanar points and cuts through existing faces leave
+/// triangles whose three corners are on one line. The mesh is closed with
+/// them, but slicers throw such triangles away and then report the hole that
+/// is left as non-manifold edges. A needle is a corner sitting on the edge of
+/// its neighbour: take the needle out and split the neighbour at that corner
+/// instead.
+fn remove_needles(triangles: &mut Vec<[usize; 3]>, points: &[Point3]) {
+  // The longest edge of a needle: the index of the corner where it starts.
+  let needle = |t: &[usize; 3]| -> Option<usize> {
+    let (a, b, c) = (points[t[0]], points[t[1]], points[t[2]]);
+    let lengths = [(b - a).magnitude(), (c - b).magnitude(), (a - c).magnitude()];
+    let k = (0..3).max_by(|&i, &j| lengths[i].partial_cmp(&lengths[j]).unwrap()).unwrap();
+    let area2 = (b - a).cross(c - a).magnitude();
+    if area2 < NEEDLE_HEIGHT * lengths[k] {
+      Some(k)
+    } else {
+      None
+    }
+  };
+  for _ in 0..20 {
+    let mut by_edge: HashMap<(usize, usize), usize> = HashMap::new();
+    for (i, t) in triangles.iter().enumerate() {
+      for k in 0..3 {
+        by_edge.insert((t[k], t[(k + 1) % 3]), i);
+      }
+    }
+    let mut touched = vec![false; triangles.len()];
+    let mut removed = vec![false; triangles.len()];
+    let mut added: Vec<[usize; 3]> = Vec::new();
+    for i in 0..triangles.len() {
+      if touched[i] {
+        continue;
+      }
+      let t = triangles[i];
+      let Some(k) = needle(&t) else { continue };
+      let (p, q, r) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+      // The neighbour across the longest edge.
+      let Some(&j) = by_edge.get(&(q, p)) else { continue };
+      if j == i || touched[j] {
+        continue;
+      }
+      let n = triangles[j];
+      let s = n[(n.iter().position(|&v| v == q).unwrap() + 2) % 3];
+      // Splitting the neighbour adds the edge from r to s, which must not be
+      // there already.
+      if s != r && (by_edge.contains_key(&(r, s)) || by_edge.contains_key(&(s, r))) {
+        continue;
+      }
+      touched[i] = true;
+      touched[j] = true;
+      removed[i] = true;
+      removed[j] = true;
+      // Two needles back to back cancel out.
+      if s != r {
+        added.push([q, r, s]);
+        added.push([r, p, s]);
+      }
+    }
+    if !removed.iter().any(|&r| r) {
+      break;
+    }
+    let mut k = 0;
+    triangles.retain(|_| {
+      k += 1;
+      !removed[k - 1]
+    });
+    triangles.extend(added);
+  }
 }
 
 /// Tessellates a shape (union of solids) and writes a binary STL file.
