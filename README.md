@@ -12,7 +12,8 @@ truck/
 │   ├── geom.rs      # Shape (union of solids), primitives, booleans, 2D shadow
 │   ├── key.rs       # switches, caps, connectors, `Key`   (port of util/key.*)
 │   ├── key_data.rs  # key placement / bowl geometry      (port of key_data.*)
-│   └── main.rs      # case assembly + output             (port of dactyl.cc)
+│   ├── main.rs      # case assembly + output             (port of dactyl.cc)
+│   └── tray.rs      # controller tray and its dock in the back wall
 └── build.sh
 ```
 
@@ -34,14 +35,18 @@ Outputs (same file names as the OpenSCAD flow):
 | --- | --- |
 | `left.stl` / `right.stl` | case halves |
 | `bottom_left.stl` / `bottom_right.stl` | bottom plates |
+| `tray_left.stl` / `tray_right.stl` | controller trays (Feather and TRRS jack) |
+| `tray_nojack_left.stl` / `tray_nojack_right.stl` | controller trays (Feather only) |
 
 Other flags:
 
 * `--out DIR` – output directory (default: current directory)
 * `--sanity` – run self-checks of the geometry primitives
 * `DACTYL_VERBOSE=1` – print details about handled boolean failures
+* `DACTYL_PREVIEW=1` – also write `preview_tray_left.stl` and
+  `preview_tray_nojack_left.stl`, the case with a tray in place (for checking the fit, not for printing)
 
-A full generation takes ~3 seconds.
+A full generation takes ~10 seconds.
 
 ## How the model is represented
 
@@ -70,7 +75,7 @@ that tree onto Truck:
   threaded insert can be fitted from either end. They are built directly as
   tubes (`tube` in `geom.rs`) and added after the screw holes are subtracted:
   cutting the bore with booleans gave cracked, non-manifold shells.
-* **STL output is welded.** Each shell's vertices are merged within 2 µm and
+* **STL output is welded.** Each shell's vertices are merged within 4 µm and
   collapsed triangles dropped before writing (`welded_triangles`), because
   boolean cuts leave micron-sized sliver faces that otherwise show up in
   slicers as non-manifold edges. The right-hand files are the mirrored
@@ -91,20 +96,61 @@ that tree onto Truck:
 ## Wrist rest (differs from the OpenSCAD original)
 
 The front walls (everything facing the user, from the pinky column to the
-thumb cluster) are moved forward to the y position of the front most corner
-of the case, the front right corner of the thumb cluster. The front edge of the
-key plate is extended level in y to meet them, so the front of the case is a
-hollow box whose top follows the height of the plate's front edge.
+thumb cluster) and the right wall of the thumb cluster are replaced by a
+hollow box with a flat top. In plan view the box is a rectangle:
 
-The top front and top left edges of that box are rounded (quarter circle,
-`WRIST_REST_RADIUS` = 10 mm in `main.rs`), as is the front left corner. At the
-front right corner the thumb cluster reaches the front face, so the wall keeps
-its regular (smaller) rounding there and blends into the large rounded edge
-along the End key.
+* from the left wall to the right most (back right) corner of the thumb
+  cluster;
+* forward to `WRIST_REST_EXTRA_DEPTH` (25.3 mm, which keeps the case within a 180 x 180 mm print bed) in front of the front most (front
+  right) corner of the thumb cluster.
 
-The bottom plate follows automatically (it is the shadow of the case). The
-front right screw insert moved forward to the new front wall and a sixth insert
-was added on the front wall, left of centre, to hold the larger plate.
+The top is level, at the height of the highest point of the front edge of the
+key plate (next to the thumb cluster, ~31.6 mm). The top edges and the two
+front corners are rounded (quarter circle, `WRIST_REST_RADIUS` = 8 mm).
+
+Between the flat top and the edge of the key plate the surface follows a smooth
+S curve (level at both ends): down to the bowl, which is up to 15 mm lower at
+the pinky column, and up to the thumb cluster, whose right edge is up to 10 mm
+higher. The curve is `WRIST_REST_SLOPE_RUN` (2 mm) long per mm of height
+difference. Next to the back of the thumb cluster there is no room for the
+whole curve, so the rim of the box rises there to meet the regular wall at the
+back right corner of the thumb cluster.
+
+The bottom plate follows automatically (it is the shadow of the case). There
+are seven screw inserts: the four of the original that are not at the front,
+two against the front wall of the wrist rest and one against its right wall.
+
+## Controller tray (differs from the OpenSCAD original)
+
+`tray.rs` generates a tray for an Adafruit Feather nRF52840 Express and a
+PJ-320A style TRRS jack, and the dock for it at the right end of the back wall
+(left half; the right half is mirrored).
+
+* **Dock.** A notch through the back wall, open at the bottom, framed by
+  straight jambs with a channel on each side and a lintel on top. It sits
+  right next to the back right corner of the case (`TRAY_DOCK_FROM_CORNER`),
+  where the side wall closes off the channel.
+* **Fitting.** With the bottom plate off, the tray slides up into the notch from
+  below. Flanges on both sides of its faceplate run in the channels, so the
+  tray cannot be pushed in or pulled out; the bottom plate holds it up.
+* **Faceplate.** Follows the (slightly angled) back wall, while the board and
+  the jack point straight back, which keeps them clear of the D column
+  switches. It has a slot as wide as the board, which the USB end of the board
+  sits in, flush with the outside at its nearest corner, and a round hole for
+  the barrel of the jack, which ends flush with the outside.
+* **Feather.** Pressed straight down onto four pegs through its mounting
+  holes, on standoffs. The USB end rests on the faceplate.
+* **Jack.** Goes in upside down (pins up, for soldering): barrel first into its
+  hole at an angle, then the back end down behind the lip. A drop of glue keeps
+  it from lifting.
+
+There are two variants. `tray_*.stl` is as described. `tray_nojack_*.stl` has
+no jack: a plain faceplate with the Feather in the same place, which is the
+side of the notch with the most headroom under the key plate. The battery
+socket of the Feather is on its long edge, facing the corner of the case in
+the left half and the free space where the jack would be in the right half.
+
+All part sizes and clearances are constants at the top of `tray.rs`.
 
 ## Rounded exterior (differs from the OpenSCAD original)
 
@@ -117,10 +163,22 @@ towards the wall (the number row) the arc crests up to ~0.75 mm above the plate
 edge before turning down.
 
 The outside corners of the case (number row left and right, thumb cluster back
-and front right) are swept around with extra slices instead of a single flat
-bevel. The inside of the walls, the key plate and the switch holes are
-unchanged; the wall positions (and so the bottom plate) only change at those
-corners, by a fraction of a millimetre.
+right) are swept around with extra slices instead of a single flat bevel. In
+plan view the wall top follows a conic arc there that is tangent to the walls
+on both sides of the corner, so the corner stays inside the lines of those
+walls. The inside of the walls and the key plate are unchanged; the wall
+positions (and so the bottom plate) only change at those corners, by a fraction
+of a millimetre.
+
+All curved surfaces are faceted; the number of segments is set by
+`WALL_ROUND_STEPS`, `WALL_CORNER_STEPS`, `WRIST_REST_CORNER_STEPS` and
+`WRIST_REST_SLOPE_STEPS` in `main.rs`.
+
+## Switch holes (differ from the OpenSCAD original)
+
+The two rounded tabs that hold a switch in its hole have a radius of
+`K_SIDE_NUB_RADIUS` = 1.15 mm (`key.rs`) instead of 1.0 mm, so each reaches
+0.15 mm further into the hole.
 
 ## Truck boolean robustness
 
@@ -128,14 +186,17 @@ corners, by a fraction of a millimetre.
 "shell is not oriented and closed") when solids share axis-aligned faces, which
 happens constantly in this model (boxes on the same z plane, keys on the same
 x/y plane). `subtract_with_nudge` retries with sub-0.05 mm translations and tiny
-rotations about the negative solid's own centre. Every boolean is wrapped in
+rotations about the negative solid's own centre. A cut is only accepted as
+is when its mesh is closed: now and then a cut succeeds but leaves a micron
+wide sliver that tessellates into a hole, and then the nudged cuts are tried
+as well. Every boolean is wrapped in
 `catch_unwind`; failed unions keep both solids side by side, failed subtractions
 keep the solid uncut and are reported in the summary line.
 
 ## Validation
 
-Done before the wrist rest was added (the front of the case and the screw
-inserts now differ on purpose). Compared against the STL files produced by the
+Done before the wrist rest was added (the front of the case, the screw
+inserts, the corners and the switch tabs now differ on purpose). Compared against the STL files produced by the
 OpenSCAD flow (see `../things` and `../src`):
 
 * bounding boxes of all four files match the OpenSCAD output exactly (0.00 mm

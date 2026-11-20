@@ -19,6 +19,10 @@ pub const K_SA_HALF_SIZE: f64 = 17.2;
 pub const K_SA_TALL_HEIGHT: f64 = 14.0;
 pub const K_SA_TALL_EDGE_HEIGHT: f64 = 16.5;
 
+/// Radius of the rounded tabs on two sides of the switch hole that hold the
+/// switch (1.0 in the original).
+pub const K_SIDE_NUB_RADIUS: f64 = 1.15;
+
 pub const K_SWITCH_HORIZONTAL_OFFSET: f64 = K_SWITCH_WIDTH / 2.0 + K_WALL_WIDTH;
 /// Distance between the top of the switch plate and the tip of the switch stem.
 #[allow(dead_code)]
@@ -72,9 +76,9 @@ pub fn make_switch(add_side_nub: bool) -> Shape {
         0.0,
         K_SWITCH_THICKNESS / 2.0,
       ),
-      cylinder(2.75, 1.0, 30, true)
+      cylinder(2.75, K_SIDE_NUB_RADIUS, 30, true)
         .rotate_x(90.0)
-        .translate(K_SWITCH_WIDTH / 2.0, 0.0, 1.0),
+        .translate(K_SWITCH_WIDTH / 2.0, 0.0, K_SIDE_NUB_RADIUS),
     ]);
     walls.push(side_nub.clone());
     walls.push(side_nub.rotate_z(180.0));

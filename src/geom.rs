@@ -601,6 +601,46 @@ pub fn cylinder(height: f64, radius: f64, fn_: usize, center: bool) -> Shape {
   }
 }
 
+/// Convex hull of a set of points.
+pub fn hull_points(points: &[Point3]) -> Shape {
+  match hull_solid(points) {
+    Some(solid) => Shape::new(solid),
+    None => {
+      HULL_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      Shape::default()
+    }
+  }
+}
+
+/// A convex polygon extruded from `z0` to `z1`, with triangulated faces (see
+/// `cube` for why).
+pub fn convex_prism(poly: &[(f64, f64)], z0: f64, z1: f64) -> Shape {
+  let points: Vec<Point3> = poly
+    .iter()
+    .flat_map(|&(x, y)| [Point3::new(x, y, z0), Point3::new(x, y, z1)])
+    .collect();
+  hull_points(&points)
+}
+
+/// A planar polygon with polygonal holes, swept along `dir`.
+///
+/// Seen looking along `dir`, the outline must be wound clockwise and the holes
+/// counter-clockwise (i.e. the face normal of the outline points along `dir`).
+pub fn sweep_face(outline: &[Point3], holes: &[Vec<Point3>], dir: Vector3) -> Shape {
+  let wire = |points: &[Point3]| {
+    let verts: Vec<Vertex> = points.iter().map(|p| Vertex::new(*p)).collect();
+    let mut wire = Wire::new();
+    for i in 0..verts.len() {
+      wire.push_back(builder::line(&verts[i], &verts[(i + 1) % verts.len()]));
+    }
+    wire
+  };
+  let mut wires = vec![wire(outline)];
+  wires.extend(holes.iter().map(|h| wire(h)));
+  let face = builder::try_attach_plane(&wires).expect("sweep face");
+  Shape::new(builder::tsweep(&face, dir))
+}
+
 /// Tube along z from z = 0 to `height`, tessellated with `fn_` segments.
 ///
 /// One solid whose end faces are rings (a polygon with a polygonal hole).
@@ -690,6 +730,8 @@ pub static SUB_PLAIN: AtomicUsize = AtomicUsize::new(0);
 pub static SUB_TRANSLATE: AtomicUsize = AtomicUsize::new(0);
 pub static SUB_ROTATE: AtomicUsize = AtomicUsize::new(0);
 pub static SUB_ROTATE_MAX: AtomicU64 = AtomicU64::new(0);
+/// Subtractions whose result does not tessellate into a closed mesh.
+pub static SUB_UNCLOSED: AtomicUsize = AtomicUsize::new(0);
 pub static SUBTRACT_DROPPED: AtomicUsize = AtomicUsize::new(0);
 pub static SUBTRACT_FAILURES: AtomicUsize = AtomicUsize::new(0);
 pub static HULL_BBOX_LOG: Mutex<Vec<[f64; 7]>> = Mutex::new(Vec::new());
@@ -720,14 +762,27 @@ fn guarded_and(a: &Solid, b: &Solid) -> Option<Solid> {
 /// tiny rotation around the negative's own centre. The cut stays visually
 /// identical at these epsilon magnitudes.
 fn subtract_with_nudge(base: &Solid, neg: &Solid) -> Option<Solid> {
-  if let Some(result) = guarded_and(base, neg) {
-    SUB_PLAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+  // A cut can succeed and still leave a micron wide sliver that does not
+  // tessellate into a closed mesh (and not the same way on every run), so a
+  // result is only taken as is when its mesh is closed. Otherwise the nudged
+  // negatives get a chance to do better, and the first result is the fallback.
+  let mut fallback: Option<Solid> = None;
+  let mut accept = |result: Solid, counter: &AtomicUsize| -> Option<Solid> {
+    if mesh_is_closed(&result) {
+      counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      return Some(result);
+    }
+    if fallback.is_none() {
+      fallback = Some(result);
+    }
+    None
+  };
+  if let Some(result) = guarded_and(base, neg).and_then(|r| accept(r, &SUB_PLAIN)) {
     return Some(result);
   }
   for eps in [1e-3, 5e-3, 2e-2, 5e-2, 1e-1, 2e-1] {
     let shifted = builder::translated(neg, Vector3::new(eps, -eps * 0.7, eps * 1.3));
-    if let Some(result) = guarded_and(base, &shifted) {
-      SUB_TRANSLATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(result) = guarded_and(base, &shifted).and_then(|r| accept(r, &SUB_TRANSLATE)) {
       return Some(result);
     }
   }
@@ -735,8 +790,7 @@ fn subtract_with_nudge(base: &Solid, neg: &Solid) -> Option<Solid> {
   let center = Point3::new((mn.x + mx.x) / 2.0, (mn.y + mx.y) / 2.0, (mn.z + mx.z) / 2.0);
   for deg in [0.01, 0.02, 0.05, 0.1, 0.2, 0.5] {
     let rotated = builder::rotated(neg, center, Vector3::unit_z(), Rad(deg));
-    if let Some(result) = guarded_and(base, &rotated) {
-      SUB_ROTATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(result) = guarded_and(base, &rotated).and_then(|r| accept(r, &SUB_ROTATE)) {
       let milli = (deg * 1000.0).round() as u64;
       let prev = SUB_ROTATE_MAX.load(std::sync::atomic::Ordering::Relaxed);
       if milli > prev {
@@ -745,7 +799,29 @@ fn subtract_with_nudge(base: &Solid, neg: &Solid) -> Option<Solid> {
       return Some(result);
     }
   }
-  None
+  if fallback.is_some() {
+    SUB_UNCLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+  }
+  fallback
+}
+
+/// Whether the mesh written for a solid is closed: every edge of every shell
+/// is shared by exactly two triangles.
+fn mesh_is_closed(solid: &Solid) -> bool {
+  for shell in solid.boundaries() {
+    let mut edges: HashMap<([u32; 3], [u32; 3]), u32> = HashMap::new();
+    for triangle in welded_triangles(shell) {
+      let bits = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+      for k in 0..3 {
+        let (a, b) = (bits(triangle[k]), bits(triangle[(k + 1) % 3]));
+        *edges.entry(if a < b { (a, b) } else { (b, a) }).or_default() += 1;
+      }
+    }
+    if edges.values().any(|&n| n != 2) {
+      return false;
+    }
+  }
+  true
 }
 
 fn union_two(a: &Solid, b: &Solid) -> Solid {
@@ -890,7 +966,7 @@ pub fn write_stl(solid: &Solid, path: &str) -> std::io::Result<()> {
 
 /// Vertices closer together than this are merged when writing an STL file.
 /// Must stay well below the 0.01 mm width of the post connectors.
-const WELD_TOL: f64 = 2e-3;
+const WELD_TOL: f64 = 4e-3;
 
 /// Triangles of one shell, with nearly coincident vertices merged and the
 /// triangles that collapse as a result removed.
