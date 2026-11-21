@@ -362,6 +362,10 @@ fn main() {
   d.key_mut(KeyId::B).extra_width_bottom = 3.0;
 
   let mut shapes: Vec<Shape> = Vec::new();
+  // The top surface of the wrist rest. Kept apart from `shapes`: it rises
+  // above the thumb plate next to it, and must not be trimmed by the cut that
+  // clears the space over that plate (see `negative_shapes`).
+  let mut rest_top: Vec<Shape> = Vec::new();
 
   //
   // Thumb plate
@@ -942,7 +946,7 @@ fn main() {
           return;
         }
         let parts: Vec<Shape> = distinct.iter().map(|s| wall_station(s.0, s.1)).collect();
-        shapes.push(Shape::hull(&parts));
+        rest_top.push(Shape::hull(&parts));
       };
       for pair in rays.windows(2) {
         let (a, b) = (&pair[0], &pair[1]);
@@ -1113,6 +1117,7 @@ fn main() {
 
   println!("unioning {} shapes...", shapes.len());
   let case_shapes = Shape::union_all(shapes);
+  let rest_top = Shape::union_all(rest_top);
 
   if geom::verbose() {
     let p = Point3::new(64.04, -13.81, 5.0);
@@ -1139,6 +1144,7 @@ fn main() {
   println!("subtracting {} shapes...", negative_shapes.len());
   let result = case_shapes
     .subtract(&Shape::union_all(negative_shapes.clone()))
+    .union(&rest_top)
     .union(&screw_posts)
     .union(&dock.frame());
   println!(
@@ -1269,7 +1275,7 @@ fn main() {
     let mut shadow_polygons: Vec<Vec<(f64, f64)>> = Vec::new();
     // The original projects the un-subtracted case: cutting holes out of a
     // convex solid does not change its shadow.
-    for solid in &case_shapes.solids {
+    for solid in case_shapes.solids.iter().chain(&rest_top.solids) {
       let poly = hull_2d(solid_points(solid));
       if poly.len() >= 3 {
         shadow_polygons.push(poly);
