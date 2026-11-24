@@ -1,12 +1,39 @@
-# dactyl-cc, ported to Truck
+# Dactyl XLCC
 
-A Rust port of the original C++/OpenSCAD generator (`../src/dactyl.cc`) that
-builds the dactyl-cc case directly as B-rep solids with
-[Truck](https://github.com/ricosjp/truck), and writes the STL files without
-OpenSCAD.
+A contoured, split keyboard case with a large tilted wrist rest and a slide-in
+controller tray, generated in Rust with the
+[Truck](https://github.com/ricosjp/truck) CAD kernel, which writes the STL
+files directly, without OpenSCAD.
+
+## Credits
+
+This is a port of, and builds on, **[dactyl-cc](https://github.com/mjohns/dactyl-cc)
+by Michael Johns** (with contributions by Leonardo Boss and TristanK-2055089).
+The key layout, the bowl and thumb cluster geometry, the switch holes, the
+walls, the screw inserts and the bottom plate all come from his C++/OpenSCAD
+generator (`src/dactyl.cc`, `src/key_data.*`, `src/util/key.*` there); this
+repository started as a faithful translation of it (see Validation below) and
+was then changed as described in the sections marked "differs from the
+OpenSCAD original".
+
+dactyl-cc in turn takes its inspiration from the
+[Dactyl](https://github.com/adereth/dactyl-keyboard) by Matthew Adereth and
+the [Dactyl Manuform](https://github.com/abstracthat/dactyl-manuform) by Tom
+Short.
+
+The history of this repository starts at the commit that added the port to
+[a fork of dactyl-cc](https://github.com/tommythorn/dactyl-cc).
+
+## License
+
+dactyl-cc does not come with a license, and this repository keeps it that
+way: no license is granted here beyond what the authors of dactyl-cc have
+granted. Ask before reusing the code or the models.
+
+## Layout
 
 ```
-truck/
+.
 ├── Cargo.toml
 ├── src/
 │   ├── geom.rs      # Shape (union of solids), primitives, booleans, 2D shadow
@@ -20,7 +47,6 @@ truck/
 ## Build and run
 
 ```
-cd truck
 ./build.sh                 # cargo build --release && generate ./out/*.stl
 # or
 cargo run --release -- --out out
@@ -219,7 +245,7 @@ keep the solid uncut and are reported in the summary line.
 
 Done before the wrist rest was added (the front of the case, the screw
 inserts, the corners and the switch tabs now differ on purpose). Compared against the STL files produced by the
-OpenSCAD flow (see `../things` and `../src`):
+OpenSCAD flow of dactyl-cc (its `things/` and `src/`):
 
 * bounding boxes of all four files match the OpenSCAD output exactly (0.00 mm
   on the case, <0.1 mm on the plate);
