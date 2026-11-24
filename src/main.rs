@@ -299,6 +299,31 @@ fn main() {
     _ => ".".to_string(),
   };
   std::fs::create_dir_all(&out_dir).ok();
+  // `--format stl,3mf` picks the file formats (default: stl).
+  let formats: Vec<String> = match args.iter().position(|a| a == "--format") {
+    Some(i) if i + 1 < args.len() => args[i + 1].split(',').map(|f| f.trim().to_lowercase()).collect(),
+    _ => vec!["stl".to_string()],
+  };
+  for f in &formats {
+    if f != "stl" && f != "3mf" {
+      eprintln!("unknown format {:?} (use stl, 3mf or stl,3mf)", f);
+      std::process::exit(2);
+    }
+  }
+  // Writes a shape in every requested format, as `out_dir/name.<format>`.
+  let write = |shape: &Shape, name: &str, mirror: bool| {
+    let shells = mesh_shells(shape, mirror);
+    for f in &formats {
+      let path = out_path(&out_dir, &format!("{}.{}", name, f));
+      println!("writing {}", path);
+      let result = if f == "3mf" {
+        write_shells_3mf(&shells, &path, name)
+      } else {
+        write_shells_stl(&shells, &path)
+      };
+      result.unwrap();
+    }
+  };
   println!("generating.. (output: {})", out_dir);
 
   let mut key_origin = TransformList::empty();
@@ -1246,10 +1271,8 @@ fn main() {
     }
     eprintln!("dumped {} triangles", tri_total);
   }
-  println!("writing left.stl");
-  write_mesh_stl(&result, &out_path(&out_dir, "left.stl"), false).unwrap();
-  println!("writing right.stl");
-  write_mesh_stl(&result, &out_path(&out_dir, "right.stl"), true).unwrap();
+  write(&result, "left", false);
+  write(&result, "right", true);
 
   // Controller trays: with the TRRS jack, and for the Feather only.
   {
@@ -1257,9 +1280,7 @@ fn main() {
     for (jack, name) in [(true, "tray"), (false, "tray_nojack")] {
       let tray = dock.tray(jack).translate(dx, dy, 0.0);
       for (mirror, side) in [(false, "left"), (true, "right")] {
-        let file = format!("{}_{}.stl", name, side);
-        println!("writing {}", file);
-        write_mesh_stl(&tray, &out_path(&out_dir, &file), mirror).unwrap();
+        write(&tray, &format!("{}_{}", name, side), mirror);
       }
       if std::env::var("DACTYL_PREVIEW").is_ok() {
         // The case with the tray in place, to check the fit.
@@ -1333,10 +1354,8 @@ fn main() {
       .collect();
     let plate = plate.subtract(&Shape { solids: holes });
 
-    println!("writing bottom_left.stl");
-    write_mesh_stl(&plate, &out_path(&out_dir, "bottom_left.stl"), false).unwrap();
-    println!("writing bottom_right.stl");
-    write_mesh_stl(&plate, &out_path(&out_dir, "bottom_right.stl"), true).unwrap();
+    write(&plate, "bottom_left", false);
+    write(&plate, "bottom_right", true);
   }
 }
 

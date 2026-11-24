@@ -8,6 +8,8 @@ truck-modeling = "0.6"
 truck-meshalgo = "0.4"
 truck-shapeops = "0.4"
 convexhull3d = "0.5"
+crc32fast = "1"
+flate2 = "1"
 
 [profile.release]
 opt-level = 3

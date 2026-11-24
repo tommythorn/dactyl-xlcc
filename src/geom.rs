@@ -1141,25 +1141,40 @@ fn remove_needles(triangles: &mut Vec<[usize; 3]>, points: &[Point3]) {
 /// With `mirror` the mesh is mirrored in x. Mirroring the finished triangles
 /// (rather than tessellating a mirrored shape) keeps both halves identical.
 pub fn write_mesh_stl(shape: &Shape, path: &str, mirror: bool) -> std::io::Result<()> {
-  use std::io::Write;
-  let mut triangles = Vec::new();
+  write_shells_stl(&mesh_shells(shape, mirror), path)
+}
+
+/// The triangles of a shape, shell by shell, cleaned up as described at
+/// `welded_triangles`. With `mirror` they are mirrored in x.
+pub fn mesh_shells(shape: &Shape, mirror: bool) -> Vec<Vec<[[f32; 3]; 3]>> {
+  let mut shells = Vec::new();
   for solid in &shape.solids {
     for shell in solid.boundaries() {
-      triangles.extend(welded_triangles(shell));
+      let mut triangles = welded_triangles(shell);
+      if mirror {
+        for [a, b, c] in triangles.iter_mut() {
+          a[0] = -a[0];
+          b[0] = -b[0];
+          c[0] = -c[0];
+          std::mem::swap(b, c);
+        }
+      }
+      if !triangles.is_empty() {
+        shells.push(triangles);
+      }
     }
   }
-  if mirror {
-    for [a, b, c] in triangles.iter_mut() {
-      a[0] = -a[0];
-      b[0] = -b[0];
-      c[0] = -c[0];
-      std::mem::swap(b, c);
-    }
-  }
+  shells
+}
+
+/// Writes shells of triangles as a binary STL file.
+pub fn write_shells_stl(shells: &[Vec<[[f32; 3]; 3]>], path: &str) -> std::io::Result<()> {
+  use std::io::Write;
+  let triangles: Vec<&[[f32; 3]; 3]> = shells.iter().flatten().collect();
   let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
   file.write_all(&[0u8; 80])?;
   file.write_all(&(triangles.len() as u32).to_le_bytes())?;
-  for [a, b, c] in &triangles {
+  for &[a, b, c] in triangles {
     let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let n = [
@@ -1169,12 +1184,133 @@ pub fn write_mesh_stl(shape: &Shape, path: &str, mirror: bool) -> std::io::Resul
     ];
     let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
     let n = if len > 0.0 { [n[0] / len, n[1] / len, n[2] / len] } else { [0.0; 3] };
-    for value in n.iter().chain(a).chain(b).chain(c) {
+    for value in n.iter().chain(a.iter()).chain(b.iter()).chain(c.iter()) {
       file.write_all(&value.to_le_bytes())?;
     }
     file.write_all(&[0u8; 2])?;
   }
   file.flush()
+}
+
+/// Writes shells of triangles as a 3MF file: one mesh object named `name`,
+/// in mm.
+///
+/// A 3MF file is a zip archive with an XML model in it. Unlike STL it stores
+/// every vertex once and the triangles as indices into that list, so the
+/// slicer does not have to work out which corners are the same. Vertices are
+/// shared within a shell only: the shells overlap, and joining them where they
+/// happen to touch would make edges with four triangles.
+pub fn write_shells_3mf(shells: &[Vec<[[f32; 3]; 3]>], path: &str, name: &str) -> std::io::Result<()> {
+  use std::fmt::Write;
+  let mut vertices = String::new();
+  let mut faces = String::new();
+  let mut count = 0usize;
+  for shell in shells {
+    let mut index: HashMap<[u32; 3], usize> = HashMap::new();
+    for t in shell {
+      let mut v = [0usize; 3];
+      for k in 0..3 {
+        let p = t[k];
+        let key = [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+        v[k] = *index.entry(key).or_insert_with(|| {
+          writeln!(vertices, "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", p[0], p[1], p[2]).unwrap();
+          count += 1;
+          count - 1
+        });
+      }
+      writeln!(faces, "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>", v[0], v[1], v[2]).unwrap();
+    }
+  }
+  let model = format!(
+    concat!(
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+      "<model unit=\"millimeter\" xml:lang=\"en-US\" ",
+      "xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n",
+      "<metadata name=\"Title\">{name}</metadata>\n",
+      "<resources>\n<object id=\"1\" type=\"model\" name=\"{name}\">\n<mesh>\n",
+      "<vertices>\n{vertices}</vertices>\n<triangles>\n{faces}</triangles>\n",
+      "</mesh>\n</object>\n</resources>\n",
+      "<build>\n<item objectid=\"1\"/>\n</build>\n</model>\n"
+    ),
+    name = name,
+    vertices = vertices,
+    faces = faces
+  );
+  let content_types = concat!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+    "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">",
+    "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>",
+    "<Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>",
+    "</Types>\n"
+  );
+  let rels = concat!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">",
+    "<Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" ",
+    "Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>",
+    "</Relationships>\n"
+  );
+  write_zip(
+    path,
+    &[
+      ("[Content_Types].xml", content_types.as_bytes()),
+      ("_rels/.rels", rels.as_bytes()),
+      ("3D/3dmodel.model", model.as_bytes()),
+    ],
+  )
+}
+
+/// Writes a zip archive with the given (name, contents) entries, deflated.
+/// The timestamps are fixed (1980-01-01), so the same input gives the same
+/// file.
+fn write_zip(path: &str, entries: &[(&str, &[u8])]) -> std::io::Result<()> {
+  use std::io::Write;
+  let mut out: Vec<u8> = Vec::new();
+  let mut central: Vec<u8> = Vec::new();
+  let (time, date) = (0u16, (1u16 << 5) | 1);
+  for (name, data) in entries {
+    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(data)?;
+    let packed = encoder.finish()?;
+    let crc = crc32fast::hash(data);
+    let offset = out.len() as u32;
+    // Fields common to the local and the central header, from "version
+    // needed" to the name length.
+    let mut common: Vec<u8> = Vec::new();
+    common.extend_from_slice(&20u16.to_le_bytes());
+    common.extend_from_slice(&0u16.to_le_bytes());
+    common.extend_from_slice(&8u16.to_le_bytes());
+    common.extend_from_slice(&time.to_le_bytes());
+    common.extend_from_slice(&date.to_le_bytes());
+    common.extend_from_slice(&crc.to_le_bytes());
+    common.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+    common.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    common.extend_from_slice(&(name.len() as u16).to_le_bytes());
+
+    out.extend_from_slice(&0x04034b50u32.to_le_bytes());
+    out.extend_from_slice(&common);
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(&packed);
+
+    central.extend_from_slice(&0x02014b50u32.to_le_bytes());
+    central.extend_from_slice(&20u16.to_le_bytes());
+    central.extend_from_slice(&common);
+    // Extra field, comment, disk number, internal and external attributes.
+    central.extend_from_slice(&[0u8; 12]);
+    central.extend_from_slice(&offset.to_le_bytes());
+    central.extend_from_slice(name.as_bytes());
+  }
+  let central_offset = out.len() as u32;
+  out.extend_from_slice(&central);
+  out.extend_from_slice(&0x06054b50u32.to_le_bytes());
+  out.extend_from_slice(&[0u8; 4]);
+  out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+  out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+  out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+  out.extend_from_slice(&central_offset.to_le_bytes());
+  out.extend_from_slice(&0u16.to_le_bytes());
+  std::fs::write(path, out)
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,11 @@
 A contoured, split keyboard case with a large tilted wrist rest and a slide-in
 controller tray, generated in Rust with the
 [Truck](https://github.com/ricosjp/truck) CAD kernel, which writes the STL
-files directly, without OpenSCAD.
+and 3MF files directly, without OpenSCAD.
+
+**Ready to print:** the generated files are in [`models/`](models), as 3MF
+(smaller, preferred by Bambu Studio and other modern slicers) and STL. Print
+one of each part per hand; see Outputs below for what is what.
 
 ## Credits
 
@@ -47,7 +51,7 @@ granted. Ask before reusing the code or the models.
 ## Build and run
 
 ```
-./build.sh                 # cargo build --release && generate ./out/*.stl
+./build.sh                 # cargo build --release && generate ./out/*.{stl,3mf}
 # or
 cargo run --release -- --out out
 ```
@@ -55,18 +59,28 @@ cargo run --release -- --out out
 The toolchain is pinned to stable in `rust-toolchain.toml` (one of Truck's
 dependencies, `branches`, does not build on nightly).
 
-Outputs (same file names as the OpenSCAD flow):
+Outputs (same file names as the OpenSCAD flow, each as `.stl` and/or `.3mf`):
 
 | file | description |
 | --- | --- |
-| `left.stl` / `right.stl` | case halves |
-| `bottom_left.stl` / `bottom_right.stl` | bottom plates |
-| `tray_left.stl` / `tray_right.stl` | controller trays (Feather and TRRS jack) |
-| `tray_nojack_left.stl` / `tray_nojack_right.stl` | controller trays (Feather only) |
+| `left` / `right` | case halves |
+| `bottom_left` / `bottom_right` | bottom plates |
+| `tray_left` / `tray_right` | controller trays (Feather and TRRS jack) |
+| `tray_nojack_left` / `tray_nojack_right` | controller trays (Feather only) |
+
+Each file holds a single part, in mm. The 3MF files contain the same triangles
+as the STL files, with every vertex stored once per shell, and are about 7x
+smaller.
+
+The committed copies in `models/` are updated by hand: run `./build.sh`, check
+the files, then `cp out/* models/`. (`out/` itself is not tracked: the
+triangulation varies slightly from run to run.)
 
 Other flags:
 
 * `--out DIR` – output directory (default: current directory)
+* `--format LIST` – `stl`, `3mf` or `stl,3mf` (default: `stl`; `build.sh`
+  writes both)
 * `--sanity` – run self-checks of the geometry primitives
 * `DACTYL_VERBOSE=1` – print details about handled boolean failures
 * `DACTYL_PREVIEW=1` – also write `preview_tray_left.stl` and
@@ -225,8 +239,8 @@ faces"), and not on every run. `write_mesh_stl` removes both, per shell:
   long edge is split at the corner in the middle instead.
 
 To check a file the way the slicer does:
-`/Applications/BambuStudio.app/Contents/MacOS/BambuStudio --info out/left.stl`
-should print `manifold = yes`.
+`/Applications/BambuStudio.app/Contents/MacOS/BambuStudio --info out/left.3mf`
+(or `.stl`) should print `manifold = yes`.
 
 ## Truck boolean robustness
 

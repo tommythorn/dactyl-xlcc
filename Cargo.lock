@@ -221,6 +221,8 @@ name = "dactyl-truck"
 version = "0.1.0"
 dependencies = [
  "convexhull3d",
+ "crc32fast",
+ "flate2",
  "truck-meshalgo",
  "truck-modeling",
  "truck-shapeops",
