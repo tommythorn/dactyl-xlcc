@@ -1,5 +1,7 @@
 # Dactyl XLCC
 
+![A printed version with switches and Ice Cap keycaps](images/IMG_0324.jpeg)
+
 A contoured, split keyboard case with a large tilted wrist rest and a slide-in
 controller tray, generated in Rust with the
 [Truck](https://github.com/ricosjp/truck) CAD kernel, which writes the STL
